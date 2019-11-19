@@ -129,6 +129,8 @@ class ResNet(nn.Module):
             noise = sigma * torch.randn_like(x).cuda()
         elif noise == 'exponential':
             noise = -sigma * torch.log(torch.FloatTensor(*x.shape).uniform_(0, 1)).cuda()
+        elif noise == 'uniform':
+            noise = torch.FloatTensor(*x.shape).uniform_(-sigma, sigma).cuda()
         else:
             raise ValueError('There is no such noise')
 
@@ -205,8 +207,8 @@ class ResNet_cifar10(ResNet):
 def resnet(**kwargs):
     num_classes, depth, dataset = map(
         kwargs.get, ['num_classes', 'depth', 'dataset'])
-    if dataset == 'imagenet':
-        num_classes = num_classes or 1000
+    if dataset == 'cifar10':
+        num_classes = 10
         depth = depth or 18
         if depth == 18:
             return ResNet_imagenet(num_classes=num_classes,

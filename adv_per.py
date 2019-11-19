@@ -31,7 +31,7 @@ class W_PGDAttack(PGDAttack):
         assert is_float_or_torch_tensor(self.eps_iter)
         assert is_float_or_torch_tensor(self.eps)
 
-    def perturb_new(self, x, y, delta_initial=None, delta_average=None, lip=0.01, exp='False'):
+    def perturb_new(self, x, y, delta_initial=None, delta_average=None, lip=0.01, exp=['False', 1.0, 'normal']):
         """
         Given examples (x, y), returns their adversarial counterparts with
         an attack length of eps.
@@ -54,14 +54,16 @@ class W_PGDAttack(PGDAttack):
         #     else:
         #         delta = torch.FloatTensor(*x.shape).uniform_(-self.eps, self.eps)
 
+        in_exp, sigma, noise = [x for x in exp]
         rval = perturb_iterative(
-            x, y, delta_initial=delta_initial, delta_average=delta_average, lip=lip, exp=exp, predict=self.predict,
+            x, y, delta_initial=delta_initial, delta_average=delta_average, lip=lip, exp=in_exp, predict=self.predict,
             nb_iter=self.nb_iter,eps=self.eps, eps_iter=self.eps_iter,
             loss_fn=self.loss_fn, minimize=self.targeted,
             ord=self.ord, clip_min=self.clip_min,
-            clip_max=self.clip_max)
+            clip_max=self.clip_max, sigma=sigma, noise=noise)
 
         return rval.data
+
 
 class W_LinfPGDAttack(W_PGDAttack):
     """
@@ -88,7 +90,7 @@ class W_LinfPGDAttack(W_PGDAttack):
 
 
 def perturb_iterative(xvar, yvar, delta_initial, delta_average, lip, exp, predict, nb_iter, eps, eps_iter, loss_fn,
-                      minimize=False, ord=np.inf, clip_min=0.0, clip_max=1.0):
+                      minimize=False, ord=np.inf, clip_min=0.0, clip_max=1.0, sigma=1.0, noise='normal'):
     """
     Iteratively maximize the loss over the input. It is a shared method for
     iterative attacks including IterativeGradientSign, LinfPGD, etc.
@@ -124,7 +126,7 @@ def perturb_iterative(xvar, yvar, delta_initial, delta_average, lip, exp, predic
     delta.requires_grad_(True)
     for ii in range(nb_iter):
         if exp == 'True':
-            p = predict.forward_in_exp(xvar + delta)
+            p = predict.forward_in_exp(xvar + delta, rep=20, sigma=sigma, noise=noise)
         else:
             p = predict.forward(xvar + delta)
 
@@ -134,7 +136,7 @@ def perturb_iterative(xvar, yvar, delta_initial, delta_average, lip, exp, predic
         loss.backward()
 
         if delta_average is not None and delta_average.size() == delta.size():
-            delta.grad.data = delta.grad.data + lip * (delta.data - delta_average)
+            delta.grad.data = delta.grad.data - lip * (delta.data - delta_average)
 
         if ord == np.inf:
             grad_sign = delta.grad.detach().sign()

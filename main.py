@@ -60,7 +60,7 @@ parser.add_argument('--weight_decay', default=5e-4, type=float,
                     metavar='W', help='weight decay (default: None)')
 parser.add_argument('--optimizer', default='SGD', type=str, metavar='OPT',
                     help='optimizer function used')
-parser.add_argument('--training_method', default='regular', type=str, metavar='training method',
+parser.add_argument('--training_method', default='adv', type=str, metavar='training method',
                     help='The method of training')
 parser.add_argument('--resume', default='True', type=str, help='resume from checkpoint')
 parser.add_argument('--gpu', default=0, type=int, help='number of gpu')
@@ -70,10 +70,12 @@ parser.add_argument('--lip_1', default=0.01, type=float, help='the estimation of
 parser.add_argument('--lip_2', default=0.01, type=float, help='the estimation of 1/lip constant for x')
 # parser.add_argument('--lip_exist', default='True', type=str, help='lip or not')
 parser.add_argument('--exp', default='False', type=str, help='in expectation or not')
+parser.add_argument('--noise', default='uniform', type=str, help='noise type')
+parser.add_argument('--sigma', default=8/255, type=float, help='the scale of noise')
 parser.add_argument('--cubic_x', default='False', type=str, help='cubic regularizer for x')
 parser.add_argument('--cubic_theta', default='False', type=str, help='cubic regularizer for theta')
 parser.add_argument('--full_avg', default='False', type=str, help='full average theta or not')
-parser.add_argument('--eps_iter', default=16/255, type=float, help='lr for adv')
+parser.add_argument('--eps_iter', default=10/255, type=float, help='lr for adv')
 
 
 def main():
@@ -83,8 +85,8 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     args.save = args.optimizer + '_' + args.model + '_' + args.dataset + '_' + '_' + args.training_method + '_' \
-                + str(args.index) + '_' + str(args.attack) + '_' + str(args.lip_1) + '_' + str(args.lip_2) + '_' \
-                + args.full_avg + '_' + str(args.eps_iter)
+                + str(args.index) + '_' + str(args.attack) + '_' + str(args.exp) + '_' + args.noise + '_' \
+                + str(args.sigma)
     save_path = os.path.join(args.save_path, str(args.hyperindex))
     save_path = os.path.join(save_path, args.save)
     if not os.path.exists(save_path):
@@ -234,7 +236,7 @@ def main():
 
     result_vector = []
     for epoch in range(start_epoch, args.epochs):
-        power = sum(epoch >= int(i) for i in [10, 15, 30])
+        power = sum(epoch >= int(i) for i in [30, 60, 90])
         lr = args.lr * pow(args.lr_decay_ratio, power)
         strat_time = time.time()
         for param_group in optimizer.param_groups:
@@ -246,9 +248,12 @@ def main():
                                             adv_criterion_test=adv_criterion_test, delta_average=delta_average,
                                             delta_initial=delta_initial, theta_average=theta_average)
 
-        test_loss, test_acc = train(dataloader=testloader, training=False, criterion=criterion, model=model,
-                                    device=device, optimizer=optimizer,
-                                    adv_criterion_train=adv_criterion_train, adv_criterion_test=adv_criterion_test)
+        if epoch > 59:
+            test_loss, test_acc = train(dataloader=testloader, training=False, criterion=criterion, model=model,
+                                        device=device, optimizer=optimizer,
+                                        adv_criterion_train=adv_criterion_train, adv_criterion_test=adv_criterion_test)
+        else:
+            test_loss, test_acc = 0.0, 0.0
         print('Training time for each epoch is %g, optimizer is %s, model is %s' % (
             time.time() - strat_time, args.optimizer, args.model + str(args.depth)))
         if test_acc > best_acc:
@@ -298,6 +303,7 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
     correct = 0
     total = 0
     batch_num = 0
+    exp = [args.exp, args.sigma, args.noise]
     if training:
         model.train()
         if args.training_method == 'adv':
@@ -346,13 +352,14 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
                         delta_initial[batch_idx].data = adv_untargeted.data - inputs.data
 
                 else:
-                    adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0, args.exp)
+                    adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0)
 
                 for p in model.parameters():
                     p.requires_grad_(True)
 
                 if args.exp == 'True':
-                    outputs = model.forward_in_exp(adv_untargeted)
+                    # outputs = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
+                    outputs = model.forward(adv_untargeted)
                 else:
                     outputs = model.forward(adv_untargeted)
 
@@ -382,8 +389,10 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
                     loss = criterion(outputs, targets)
                     loss.backward()
                     for p, q in zip(model.parameters(), theta_average):
-                        p.grad.data = p.grad.data + args.lip_1 * (p.data - q.data)
-                        q.data = (q.data * iteration + p.data) / (iteration + 1)
+                        if p.grad is not None:
+                            print('check')
+                            p.grad.data = p.grad.data + args.lip_1 * (p.data - q.data)
+                            q.data = (q.data * iteration + p.data) / (iteration + 1)
 
                     iteration += 1
 
@@ -440,17 +449,17 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
                     ord, eps, eps_iter = np.inf, 8/255, 2/255
                 adversary = W_LinfPGDAttack(
                     model, loss_fn=adv_criterion_test, eps=eps,
-                    nb_iter=10, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
+                    nb_iter=20, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
                     targeted=False, rep=False)
 
             else:
                 raise ValueError('There is no such dataset.')
 
-            adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0, args.exp)
+            adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0, exp)
             # adv_untargeted = inputs
             for p in model.parameters():
                 p.requires_grad_(True)
-            outputs_ad = model.forward(adv_untargeted)
+            outputs_ad = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
             loss = criterion.forward(outputs_ad, targets)
             optimizer.zero_grad()
             test_loss += loss.item()
