@@ -88,7 +88,7 @@ def main():
 
     args.save = args.optimizer + '_' + args.model + '_' + args.dataset + '_' + '_' + args.training_method + '_' \
                 + str(args.index) + '_' + str(args.attack) + '_' + str(args.exp) + '_' + args.noise + '_' \
-                + str(args.sigma)
+                + str(args.sigma) + args.pj + str(args.repeat)
     save_path = os.path.join(args.save_path, str(args.hyperindex))
     save_path = os.path.join(save_path, args.save)
     if not os.path.exists(save_path):
@@ -325,17 +325,28 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
                     for p in model.parameters():
                         p.requires_grad_(False)
 
-                    outputs = model.forward_in_exp(inputs, rep=args.repeat, sigma=args.sigma, noise=args.noise)
-                    loss = criterion(outputs, targets)
-                    loss.backward(retain_graph=True)
-                    p = 2 if args.attack == 2.0 else 1
-                    jacobian = inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
-                    inputs.grad.data.zero_()
-                    inputs.detach()
+                    outputs = 0
+                    jacobian = 0
+                    for ii in range(args.repeat):
+                        if args.noise == 'normal':
+                            noise = args.sigma * torch.randn_like(inputs).cuda()
+                        else:
+                            noise = torch.FloatTensor(*inputs.shape).uniform_(-args.sigma, args.sigma).cuda()
 
-                    for p in model.parameters():
-                        p.requires_grad_(True)
-                    loss = loss + args.eps_iter * jacobian.sum()
+                        outputs_tmp = model.forward(inputs + noise)
+                        outputs += outputs_tmp
+                        loss_tmp = criterion(outputs_tmp, targets)
+                        loss_tmp.backward(retain_graph=True)
+                        p = 2 if args.attack == 2.0 else 1
+                        jacobian += inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
+                        inputs.grad.data.zero_()
+
+                    inputs.detach()
+                    inputs.requires_grad_(False)
+                    loss = criterion(outputs, targets) + args.eps_iter * jacobian.sum()
+
+                    # for p in model.parameters():
+                    #     p.requires_grad_(True)
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
@@ -485,7 +496,7 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
             if args.exp == 'True':
                 outputs_ad = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
             else:
-                outputs_ad = mdoel.forward(adv_untargeted)
+                outputs_ad = model.forward(adv_untargeted)
             loss = criterion.forward(outputs_ad, targets)
             optimizer.zero_grad()
             test_loss += loss.item()
