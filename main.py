@@ -35,7 +35,7 @@ parser.add_argument('--model', '-a', metavar='MODEL', default='resnet',
                     help='model architecture: ' +
                     ' | '.join(model_names) +
                     ' (default: alexnet)')
-parser.add_argument('--depth', default=20, type=int,
+parser.add_argument('--depth', default=18, type=int,
                     help='depth for resnet')
 parser.add_argument('--index', type=str, default=0,
                     help='experiment index')
@@ -76,6 +76,8 @@ parser.add_argument('--cubic_x', default='False', type=str, help='cubic regulari
 parser.add_argument('--cubic_theta', default='False', type=str, help='cubic regularizer for theta')
 parser.add_argument('--full_avg', default='False', type=str, help='full average theta or not')
 parser.add_argument('--eps_iter', default=10/255, type=float, help='lr for adv')
+parser.add_argument('--pj', default='False', type=str, help='penalized Jacobian')
+parser.add_argument('--repeat', default=1, type=int, help='repeat times')
 
 
 def main():
@@ -248,7 +250,7 @@ def main():
                                             adv_criterion_test=adv_criterion_test, delta_average=delta_average,
                                             delta_initial=delta_initial, theta_average=theta_average)
 
-        if epoch > 59:
+        if epoch % 5 == 0:
             test_loss, test_acc = train(dataloader=testloader, training=False, criterion=criterion, model=model,
                                         device=device, optimizer=optimizer,
                                         adv_criterion_train=adv_criterion_train, adv_criterion_test=adv_criterion_test)
@@ -318,94 +320,115 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
             inputs, targets = inputs.to(device), targets.to(device)
 
             if args.training_method == 'adv':
-                for p in model.parameters():
-                    p.requires_grad_(False)
-                if args.dataset == 'mnist':
-                    if args.attack == 2.0:
-                        ord, eps, eps_iter = 2, 1.0, 0.3
+                if args.pj == 'True':
+                    inputs.requires_grad_(True)
+                    for p in model.parameters():
+                        p.requires_grad_(False)
+
+                    outputs = model.forward_in_exp(inputs, rep=args.repeat, sigma=args.sigma, noise=args.noise)
+                    loss = criterion(outputs, targets)
+                    loss.backward(retain_graph=True)
+                    p = 2 if args.attack == 2.0 else 1
+                    jacobian = inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
+                    inputs.grad.data.zero_()
+                    inputs.detach()
+
+                    for p in model.parameters():
+                        p.requires_grad_(True)
+                    loss = loss + args.eps_iter * jacobian.sum()
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                else:
+                    for p in model.parameters():
+                        p.requires_grad_(False)
+                    if args.dataset == 'mnist':
+                        if args.attack == 2.0:
+                            ord, eps, eps_iter = 2, 1.0, 0.3
+                        else:
+                            ord, eps, eps_iter = np.inf, 0.3, 0.1
+                        adversary = W_LinfPGDAttack(
+                            model, loss_fn=adv_criterion_train, eps=eps,
+                            nb_iter=40, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
+                            targeted=False, rep=False)
+
+                    elif 'cifar' in args.dataset:
+                        if args.attack == 2.0:
+                            ord, eps, eps_iter = 2, 64, args.eps_iter
+                        else:
+                            ord, eps, eps_iter = np.inf, 8/255, args.eps_iter
+                        adversary = W_LinfPGDAttack(
+                            model, loss_fn=adv_criterion_train, eps=eps,
+                            nb_iter=1, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
+                            targeted=False, rep=False)
+
                     else:
-                        ord, eps, eps_iter = np.inf, 0.3, 0.1
-                    adversary = W_LinfPGDAttack(
-                        model, loss_fn=adv_criterion_train, eps=eps,
-                        nb_iter=40, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
-                        targeted=False, rep=False)
+                        raise ValueError('There is no such dataset.')
 
-                elif 'cifar' in args.dataset:
-                    if args.attack == 2.0:
-                        ord, eps, eps_iter = 2, 1.0, 1.57
+                    if args.cubic_x == 'True':
+                        adv_untargeted = adversary.perturb_new(inputs, targets, delta_initial[batch_idx],
+                                                               delta_average[batch_idx], args.lip_2, args.exp)
+                        if adv_untargeted.size() == delta_initial[batch_idx].size():
+                            delta_average[batch_idx].data = (delta_average[batch_idx].data * epoch + adv_untargeted.data
+                                                             - inputs.data) / (epoch + 1)
+                            delta_initial[batch_idx].data = adv_untargeted.data - inputs.data
+
                     else:
-                        ord, eps, eps_iter = np.inf, 8/255, args.eps_iter
-                    adversary = W_LinfPGDAttack(
-                        model, loss_fn=adv_criterion_train, eps=eps,
-                        nb_iter=1, eps_iter=eps_iter, rand_init=True, clip_min=0.0, clip_max=1.0, ord=ord,
-                        targeted=False, rep=False)
+                        adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0)
 
-                else:
-                    raise ValueError('There is no such dataset.')
+                    for p in model.parameters():
+                        p.requires_grad_(True)
 
-                if args.cubic_x == 'True':
-                    adv_untargeted = adversary.perturb_new(inputs, targets, delta_initial[batch_idx],
-                                                           delta_average[batch_idx], args.lip_2, args.exp)
-                    if adv_untargeted.size() == delta_initial[batch_idx].size():
-                        delta_average[batch_idx].data = (delta_average[batch_idx].data * epoch + adv_untargeted.data
-                                                         - inputs.data) / (epoch + 1)
-                        delta_initial[batch_idx].data = adv_untargeted.data - inputs.data
+                    if args.exp == 'True':
+                        # outputs = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
+                        outputs = model.forward(adv_untargeted)
+                    else:
+                        outputs = model.forward(adv_untargeted)
 
-                else:
-                    adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0)
-
-                for p in model.parameters():
-                    p.requires_grad_(True)
-
-                if args.exp == 'True':
-                    # outputs = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
-                    outputs = model.forward(adv_untargeted)
-                else:
-                    outputs = model.forward(adv_untargeted)
-
-                if args.cubic_theta == 'True':
-                    # if args.dynamic == 'True':
-                    #     grad_norm_tmp = 0
-                    #     theta_norm_tmp = 0
-                    #     loss = criterion(outputs, targets)
-                    #     loss.backward()
-                    #
-                    #     for p, q, r in zip(grad_tmp, theta_tmp, model.parameters()):
-                    #         grad_norm_tmp += torch.pow(torch.dist(p, r.grad), 2).sum()
-                    #         theta_norm_tmp += torch.pow(torch.dist(q, r), 2).sum()
-                    #     lip = 2 * grad_norm_tmp / (theta_norm_tmp + 1e-8)
-                    #     lip = torch.clamp(lip, 0, 0.1)
-
-                       # print(lip)
-
-                        # for p, q, r in zip(model.parameters(), theta_tmp, grad_tmp):
-                        #     r.data.copy_(p.grad.data)
-                        #     # p.grad.data.add_(-p.data / (2 * lr) + q.data / (2 * lr))
-                        #     p.grad.data.add_(0.01 * q.data)
-                        #     q.data = (q.data * iteration + p.data) / (iteration + 1)
+                    if args.cubic_theta == 'True':
+                        # if args.dynamic == 'True':
+                        #     grad_norm_tmp = 0
+                        #     theta_norm_tmp = 0
+                        #     loss = criterion(outputs, targets)
+                        #     loss.backward()
                         #
-                        # iteration += 1
+                        #     for p, q, r in zip(grad_tmp, theta_tmp, model.parameters()):
+                        #         grad_norm_tmp += torch.pow(torch.dist(p, r.grad), 2).sum()
+                        #         theta_norm_tmp += torch.pow(torch.dist(q, r), 2).sum()
+                        #     lip = 2 * grad_norm_tmp / (theta_norm_tmp + 1e-8)
+                        #     lip = torch.clamp(lip, 0, 0.1)
 
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    for p, q in zip(model.parameters(), theta_average):
-                        if p.grad is not None:
-                            print('check')
-                            p.grad.data = p.grad.data + args.lip_1 * (p.data - q.data)
-                            q.data = (q.data * iteration + p.data) / (iteration + 1)
+                           # print(lip)
 
-                    iteration += 1
+                            # for p, q, r in zip(model.parameters(), theta_tmp, grad_tmp):
+                            #     r.data.copy_(p.grad.data)
+                            #     # p.grad.data.add_(-p.data / (2 * lr) + q.data / (2 * lr))
+                            #     p.grad.data.add_(0.01 * q.data)
+                            #     q.data = (q.data * iteration + p.data) / (iteration + 1)
+                            #
+                            # iteration += 1
 
-                    optimizer.param_groups[0]['lr'] = lr / (1 + lr * args.lip_1)
-                    optimizer.step()
-                    optimizer.param_groups[0]['lr'] = lr
-                    optimizer.zero_grad()
+                        loss = criterion(outputs, targets)
+                        loss.backward()
+                        for p, q in zip(model.parameters(), theta_average):
+                            if p.grad is not None:
+                                print('check')
+                                p.grad.data = p.grad.data + args.lip_1 * (p.data - q.data)
+                                q.data = (q.data * iteration + p.data) / (iteration + 1)
 
-                else:
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
+                        iteration += 1
+
+                        optimizer.param_groups[0]['lr'] = lr / (1 + lr * args.lip_1)
+                        optimizer.step()
+                        optimizer.param_groups[0]['lr'] = lr
+                        optimizer.zero_grad()
+
+                    else:
+                        loss = criterion(outputs, targets)
+                        loss.backward()
+                        optimizer.step()
+                        optimizer.zero_grad()
 
             else:
                 outputs = model.forward(inputs)
@@ -459,7 +482,10 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
             # adv_untargeted = inputs
             for p in model.parameters():
                 p.requires_grad_(True)
-            outputs_ad = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
+            if args.exp == 'True':
+                outputs_ad = model.forward_in_exp(adv_untargeted, rep=20, sigma=exp[1], noise=exp[2])
+            else:
+                outputs_ad = mdoel.forward(adv_untargeted)
             loss = criterion.forward(outputs_ad, targets)
             optimizer.zero_grad()
             test_loss += loss.item()

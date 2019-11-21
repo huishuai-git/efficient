@@ -119,9 +119,9 @@ def perturb_iterative(xvar, yvar, delta_initial, delta_average, lip, exp, predic
         delta = delta_initial
     else:
         if torch.cuda.is_available():
-            delta = torch.FloatTensor(*xvar.shape).uniform_(eps, eps).cuda()
+            delta = torch.FloatTensor(*xvar.shape).uniform_(-sigma, sigma).cuda() if ord != 2 else sigma * torch.randn_likes(xvar).cuda()
         else:
-            delta = torch.FloatTensor(*xvar.shape).uniform_(eps, eps)
+            delta = torch.FloatTensor(*xvar.shape).uniform_(-sigma, sigma) if ord != 2 else sigma * torch.randn_likes(xvar)
 
     delta.requires_grad_(True)
     for ii in range(nb_iter):
