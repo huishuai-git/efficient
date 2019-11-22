@@ -120,3 +120,43 @@ class W_distance(nn.CrossEntropyLoss):
         E_q = (q * f_div).sum() / p.size()[0]
 
         return torch.abs(E_p - E_q)
+
+
+class Jacobian(nn.CrossEntropyLoss):
+    __constants__ = ['weight', 'ignore_index', 'reduction']
+
+    def __init__(self, weight=None, size_average=None, ignore_index=-100,
+                 reduce=None, reduction='mean', criterion=nn.CrossEntropyLoss(), model=None):
+        super(Jacobian, self).__init__(weight, reduce, reduction, criterion, model)
+        self.size_average = size_average
+        self.ignore_index = ignore_index
+        self.criterion = criterion
+        self.model = model
+
+    def forward(self, inputs, target, noise='uniform', sigma=1.0, repeat=1, attack=1.0):
+        outputs = 0
+        jacobian = 0
+        inputs.requires_grad_(True)
+        # for p in self.model.parameters():
+        #     p.requires_grad_(False)
+        for i in range(repeat):
+            if noise == 'normal':
+                noise_tmp = sigma * torch.randn_like(inputs).cuda()
+            else:
+                noise_tmp = torch.FloatTensor(*inputs.shape).uniform_(-sigma, sigma).cuda()
+
+            outputs_tmp = self.model.forward(inputs + noise_tmp)
+            outputs += outputs_tmp
+            loss = self.criterion(outputs_tmp, target)
+            loss.backward(retain_graph=True)
+            p = 2 if attack == 2.0 else 1
+            jacobian += inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
+            inputs.grad.data.zero_()
+
+        # for p in self.model.parameters():
+        #     p.requires_grad_(True)
+
+        inputs.detach()
+        inputs.requires_grad_(False)
+
+        return outputs, jacobian.sum()

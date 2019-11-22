@@ -321,32 +321,11 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
 
             if args.training_method == 'adv':
                 if args.pj == 'True':
-                    inputs.requires_grad_(True)
-                    # for p in model.parameters():
-                    #     p.requires_grad_(False)
-
-                    outputs = 0
-                    jacobian = 0
-                    for ii in range(args.repeat):
-                        if args.noise == 'normal':
-                            noise = args.sigma * torch.randn_like(inputs).cuda()
-                        else:
-                            noise = torch.FloatTensor(*inputs.shape).uniform_(-args.sigma, args.sigma).cuda()
-
-                        outputs_tmp = model.forward(inputs + noise)
-                        outputs += outputs_tmp
-                        loss = criterion(outputs_tmp, targets)
-                        loss.backward()
-                        p = 2 if args.attack == 2.0 else 1
-                        jacobian += inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
-                        inputs.grad.data.zero_()
-
-                    inputs.detach()
-                    inputs.requires_grad_(False)
-                    loss = criterion(outputs, targets) + args.eps_iter * jacobian.sum()
-
-                    # for p in model.parameters():
-                    #     p.requires_grad_(True)
+                    # Jacobian_ =Jacobian(criterion=criterion, model=model)
+                    outputs, jacobian = Jacobian(criterion=criterion, model=model).forward(inputs=inputs, target=targets,
+                                                                                           noise=args.noise,
+                                                                                           sigma=args.sigma, repeat=args.repeat, attack=args.attack)
+                    loss = criterion(outputs, targets) + args.eps_iter * jacobian
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
