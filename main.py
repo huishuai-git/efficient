@@ -87,7 +87,7 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     args.save = args.optimizer + '_' + args.model + '_' + args.dataset + '_' + '_' + args.training_method + '_' \
-                + str(args.index) + '_' + str(args.attack) + '_' + str(args.exp) + '_' + args.noise + '_' \
+                + str(args.index) + '_' + str(args.attack) + '_' + str(args.eps_iter) + '_' + str(args.exp) + '_' + args.noise + '_' \
                 + str(args.sigma) + args.pj + str(args.repeat)
     save_path = os.path.join(args.save_path, str(args.hyperindex))
     save_path = os.path.join(save_path, args.save)
@@ -322,8 +322,8 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
             if args.training_method == 'adv':
                 if args.pj == 'True':
                     inputs.requires_grad_(True)
-                    for p in model.parameters():
-                        p.requires_grad_(False)
+                    # for p in model.parameters():
+                    #     p.requires_grad_(False)
 
                     outputs = 0
                     jacobian = 0
@@ -335,8 +335,8 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
 
                         outputs_tmp = model.forward(inputs + noise)
                         outputs += outputs_tmp
-                        loss_tmp = criterion(outputs_tmp, targets)
-                        loss_tmp.backward(retain_graph=True)
+                        loss = criterion(outputs_tmp, targets)
+                        loss.backward()
                         p = 2 if args.attack == 2.0 else 1
                         jacobian += inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
                         inputs.grad.data.zero_()
@@ -366,7 +366,7 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
 
                     elif 'cifar' in args.dataset:
                         if args.attack == 2.0:
-                            ord, eps, eps_iter = 2, 64, args.eps_iter
+                            ord, eps, eps_iter = 2, 64.0, args.eps_iter
                         else:
                             ord, eps, eps_iter = np.inf, 8/255, args.eps_iter
                         adversary = W_LinfPGDAttack(
@@ -386,7 +386,7 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
                             delta_initial[batch_idx].data = adv_untargeted.data - inputs.data
 
                     else:
-                        adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0)
+                        adv_untargeted = adversary.perturb_new(inputs, targets, None, None, 0, ['False', args.sigma, args.noise])
 
                     for p in model.parameters():
                         p.requires_grad_(True)
