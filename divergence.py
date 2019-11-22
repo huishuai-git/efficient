@@ -2,6 +2,8 @@ import torch
 
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.autograd
+from torch.autograd import Variable
 
 
 class Renyi_divergence(nn.CrossEntropyLoss):
@@ -133,7 +135,7 @@ class Jacobian(nn.CrossEntropyLoss):
         self.criterion = criterion
         self.model = model
 
-    def forward(self, inputs, target, noise='uniform', sigma=1.0, repeat=1, attack=1.0):
+    def forward(self, inputs, target, noise='uniform', sigma=1.0, repeat=1, attack=1.0, eps_iter=0.031):
         outputs = 0
         jacobian = 0
         inputs.requires_grad_(True)
@@ -148,15 +150,20 @@ class Jacobian(nn.CrossEntropyLoss):
             outputs_tmp = self.model.forward(inputs + noise_tmp)
             outputs += outputs_tmp
             loss = self.criterion(outputs_tmp, target)
-            loss.backward(retain_graph=True)
+            input_grad = torch.autograd.grad(loss, inputs, create_graph=True, retain_graph=True)[0]
             p = 2 if attack == 2.0 else 1
-            jacobian += inputs.grad.detach().data.view(inputs.size()[0], -1).norm(p, 1) ** p
-            inputs.grad.data.zero_()
+            jacobian += input_grad.view(inputs.size()[0], -1).norm(p, 1) ** p
+            # inputs.grad.data.zero_()
 
+        print(jacobian.sum())
         # for p in self.model.parameters():
         #     p.requires_grad_(True)
 
+        loss = self.criterion(outputs, target)# + eps_iter * jacobian.sum()
+        for p in self.model.parameters():
+            grad_jacobian = torch.autograd.grad(eps_iter * jacobian.sum(), p, retain_graph=True)[0]
+            p.grad = torch.autograd.grad(loss, p, retain_graph=True)[0] + grad_jacobian
         inputs.detach()
         inputs.requires_grad_(False)
 
-        return outputs, jacobian.sum()
+        return loss

@@ -322,11 +322,8 @@ def train(dataloader, training, criterion, model, device, optimizer, epoch=0, ad
             if args.training_method == 'adv':
                 if args.pj == 'True':
                     # Jacobian_ =Jacobian(criterion=criterion, model=model)
-                    outputs, jacobian = Jacobian(criterion=criterion, model=model).forward(inputs=inputs, target=targets,
-                                                                                           noise=args.noise,
-                                                                                           sigma=args.sigma, repeat=args.repeat, attack=args.attack)
-                    loss = criterion(outputs, targets) + args.eps_iter * jacobian
-                    loss.backward()
+                    loss = Jacobian(criterion=criterion, model=model).forward(inputs=inputs, target=targets, noise=args.noise,
+                                    sigma=args.sigma, repeat=args.repeat, attack=args.attack, eps_iter=args.eps_iter)
                     optimizer.step()
                     optimizer.zero_grad()
 
