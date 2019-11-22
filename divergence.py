@@ -154,8 +154,6 @@ class Jacobian(nn.CrossEntropyLoss):
             p = 2 if attack == 2.0 else 1
             jacobian += input_grad.view(inputs.size()[0], -1).norm(p, 1) ** p
             # inputs.grad.data.zero_()
-
-        print(jacobian.sum())
         # for p in self.model.parameters():
         #     p.requires_grad_(True)
 
